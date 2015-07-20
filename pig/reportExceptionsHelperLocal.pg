@@ -1,0 +1,46 @@
+/*
+# Copyright 2013 BlackBerry, Inc.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License. 
+*/
+
+SET default_parallel 1
+DEFINE DateFormatter          com.rim.logdriver.pig.DateFormatter('$dateFormat');
+
+lines = LOAD '$tmpdir/rawlines'
+        USING PigStorage('\\x$fs')
+        AS (time:long, message:chararray, eventId:int, createTime:long, blockNo:long, lineNo:long);
+
+SPLIT lines INTO
+  bad_data IF (
+    (time is null)
+    OR (createTime is null)
+    OR (blockNo is null)
+    OR (lineNo is null)
+  ),
+  good_data IF (
+    (time is not null)
+    AND (createTime is not null)
+    AND (blockNo is not null)
+    AND (lineNo is not null)
+    AND (message MATCHES '.*CAUGHT: \\S+.*')
+  );  
+
+ordered_lines = ORDER good_data BY time, createTime, blockNo, lineNo;
+filtered_lines = FOREACH ordered_lines 
+		 GENERATE REGEX_EXTRACT(DateFormatter(time), '(\\d{4}-\\d{2}-\\d{2})', 1) AS day, 
+			  REGEX_EXTRACT(message, '(CAUGHT:) (\\S+)', 2) AS exceptionName,
+                          REGEX_EXTRACT(message, 'bp([a-z]+)[0-9]+', 1) AS componentName;
+grouped = GROUP filtered_lines BY (($groupByEN == 1) ? (exceptionName, day, componentName) : (day, componentName, exceptionName));
+results = FOREACH grouped GENERATE FLATTEN(group) as (day, componentName, exceptionName), COUNT(filtered_lines) as count;
+STORE results INTO '$out';
